@@ -4,7 +4,7 @@ export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost
 
 export const WIDGET_COLLAPSED_SIZE = 52;
 export const WIDGET_EXPANDED_WIDTH = 320;
-export const WIDGET_EXPANDED_HEIGHT = 220;
+export const WIDGET_EXPANDED_HEIGHT = 280;
 
 export const COLORS = {
     glassPrimary: "rgba(255, 255, 255, 0.08)",

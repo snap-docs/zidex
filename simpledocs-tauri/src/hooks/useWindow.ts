@@ -2,28 +2,43 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useWindowStore, Corner } from "../stores/windowStore";
-import { WIDGET_COLLAPSED_SIZE, WIDGET_EXPANDED_WIDTH, WIDGET_EXPANDED_HEIGHT } from "../utils/constants";
 
-const CORNER_POSITIONS = (sw: number, sh: number): Record<Corner, [number, number]> => ({
-    "top-left": [16, 16],
-    "top-right": [sw - 68, 16],
-    "bottom-left": [16, sh - 120],   // 52(widget) + 52(taskbar) + 16(pad)
-    "bottom-right": [sw - 68, sh - 120],
+const PAD = 16;
+const TASKBAR = 52;
+const PW = 52; const PH = 52;   // pill dimensions
+const EW = 320; const EH = 280;  // expanded panel dimensions
+
+// Absolute corner positions for collapsed pill (52x52)
+const pillCorners = (sw: number, sh: number): Record<Corner, [number, number]> => ({
+    "top-left": [PAD, PAD],
+    "top-right": [sw - PW - PAD, PAD],
+    "bottom-left": [PAD, sh - PH - TASKBAR],
+    "bottom-right": [sw - PW - PAD, sh - PH - TASKBAR],
 });
+
+// Absolute corner positions for expanded panel (320x280)
+const expandedCorners = (sw: number, sh: number): Record<Corner, [number, number]> => ({
+    "top-left": [PAD, PAD],
+    "top-right": [sw - EW - PAD, PAD],
+    "bottom-left": [PAD, sh - EH - TASKBAR],
+    "bottom-right": [sw - EW - PAD, sh - EH - TASKBAR],
+});
+
+// Suppress window-moved snap during programmatic resize/move
+let isDragSnapBlocked = false;
 
 export const useWindow = () => {
     const { isExpanded, setExpanded, setDragging, corner, setCorner } = useWindowStore();
     const appWindow = getCurrentWindow();
 
-    // Smooth 10-step ease-out-cubic animation to target position
+    // Smooth 10-step ease-out-cubic animation
     const snapWithAnimation = async (targetX: number, targetY: number) => {
         const pos = await appWindow.outerPosition();
         const scale = await appWindow.scaleFactor();
         const startX = pos.x / scale;
         const startY = pos.y / scale;
-        const steps = 10;
-        for (let i = 1; i <= steps; i++) {
-            const ease = 1 - Math.pow(1 - i / steps, 3);
+        for (let i = 1; i <= 10; i++) {
+            const ease = 1 - Math.pow(1 - i / 10, 3);
             await invoke("set_window_position", {
                 x: startX + (targetX - startX) * ease,
                 y: startY + (targetY - startY) * ease,
@@ -35,68 +50,70 @@ export const useWindow = () => {
     const snapToNearestCorner = async () => {
         const pos = await appWindow.outerPosition();
         const scale = await appWindow.scaleFactor();
+        const sz = await appWindow.outerSize();
+        const ww = sz.width / scale;
+        const wh = sz.height / scale;
 
+        // Pass actual dimensions so Rust calculates the correct corner
         const [targetX, targetY] = await invoke<[number, number]>("snap_to_corner", {
             widgetX: pos.x / scale,
             widgetY: pos.y / scale,
-            widgetSize: WIDGET_COLLAPSED_SIZE,
+            widgetW: ww,
+            widgetH: wh,
         });
 
-        // Detect which corner and persist it
+        // Persist which corner we landed in
         const [sw, sh] = await invoke<[number, number]>("get_screen_size");
-        const positions = CORNER_POSITIONS(sw, sh);
+        const isExpNow = useWindowStore.getState().isExpanded;
+        const positions = isExpNow ? expandedCorners(sw, sh) : pillCorners(sw, sh);
         const detected = (Object.entries(positions) as [Corner, [number, number]][])
-            .find(([, [cx, cy]]) => Math.abs(cx - targetX) < 2 && Math.abs(cy - targetY) < 2);
+            .find(([, [cx, cy]]) => Math.abs(cx - targetX) < 4 && Math.abs(cy - targetY) < 4);
         if (detected) setCorner(detected[0]);
 
         await snapWithAnimation(targetX, targetY);
     };
 
     const expand = async () => {
-        const pos = await appWindow.outerPosition();
-        const scale = await appWindow.scaleFactor();
-        const pillX = pos.x / scale;
-        const pillY = pos.y / scale;
+        const [sw, sh] = await invoke<[number, number]>("get_screen_size");
+        const c = useWindowStore.getState().corner;
+        const [newX, newY] = expandedCorners(sw, sh)[c];
 
-        // Move window so panel grows inward from the pill's corner
-        const offsets: Record<Corner, [number, number]> = {
-            "bottom-right": [pillX - (WIDGET_EXPANDED_WIDTH - WIDGET_COLLAPSED_SIZE), pillY - (WIDGET_EXPANDED_HEIGHT - WIDGET_COLLAPSED_SIZE)],
-            "bottom-left": [pillX, pillY - (WIDGET_EXPANDED_HEIGHT - WIDGET_COLLAPSED_SIZE)],
-            "top-right": [pillX - (WIDGET_EXPANDED_WIDTH - WIDGET_COLLAPSED_SIZE), pillY],
-            "top-left": [pillX, pillY],
-        };
-
-        const [newX, newY] = offsets[corner] ?? offsets["bottom-right"];
+        isDragSnapBlocked = true;
+        // Move to correct position FIRST, then resize — prevents off-screen flash
         await invoke("set_window_position", { x: newX, y: newY });
-        await appWindow.setSize(new LogicalSize(WIDGET_EXPANDED_WIDTH, WIDGET_EXPANDED_HEIGHT));
+        await appWindow.setSize(new LogicalSize(EW, EH));
         setExpanded(true);
+        setTimeout(() => { isDragSnapBlocked = false; }, 600);
     };
 
     const collapse = async () => {
         setExpanded(false);
         await new Promise(r => setTimeout(r, 120)); // let exit animation play
 
-        // Restore the exact corner position, then shrink
         const [sw, sh] = await invoke<[number, number]>("get_screen_size");
-        const [x, y] = CORNER_POSITIONS(sw, sh)[corner];
+        const c = useWindowStore.getState().corner;
+        const [x, y] = pillCorners(sw, sh)[c];
+
+        isDragSnapBlocked = true;
+        // Shrink FIRST so pill lands at correct position, not expanded-panel position
+        await appWindow.setSize(new LogicalSize(PW, PH));
         await invoke("set_window_position", { x, y });
-        await appWindow.setSize(new LogicalSize(WIDGET_COLLAPSED_SIZE, WIDGET_COLLAPSED_SIZE));
+        setTimeout(() => { isDragSnapBlocked = false; }, 600);
     };
 
-    const startDrag = () => {
+    const startDrag = async () => {
         setDragging(true);
-        appWindow.startDragging();
+        await appWindow.startDragging();
     };
 
-    // Listen for window-moved events (emitted by main.rs on every OS move).
-    // Debounce 150ms — when movement stops, snap to nearest corner.
+    // Listen for window-moved (emitted by main.rs on every OS Moved event).
+    // Debounces 150ms — snaps after drag stops. Works for both pill and popup.
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout>;
         let unlistenFn: (() => void) | null = null;
 
         appWindow.listen("window-moved", () => {
-            // Only snap when in collapsed (pill) mode
-            if (useWindowStore.getState().isExpanded) return;
+            if (isDragSnapBlocked) return;
             clearTimeout(timer);
             timer = setTimeout(async () => {
                 setDragging(false);

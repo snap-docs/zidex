@@ -8,6 +8,7 @@ use tauri::LogicalSize;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::capture::get_selected_text,
             commands::window::set_window_position,

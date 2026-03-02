@@ -6,7 +6,7 @@ import { useExplanationStore } from "../../stores/explanationStore";
 import { useWindow } from "../../hooks/useWindow";
 import "../../styles/glass.css";
 
-const startWindowDrag = () => getCurrentWindow().startDragging();
+const startWindowDrag = async () => { await getCurrentWindow().startDragging(); };
 
 const CASE_COLORS: Record<string, string> = {
     code: "#22d3ee", error: "#f87171", other: "#a3a3a3"
@@ -34,7 +34,7 @@ export const ResultScreen = () => {
 
     return (
         <motion.div className="glass-card"
-            style={{ width: 320, height: 220, display: "flex", flexDirection: "column", padding: "12px 14px", gap: 8 }}
+            style={{ width: 320, height: 280, display: "flex", flexDirection: "column", padding: "0 14px 14px", gap: 8 }}
             initial={{ opacity: 0, scale: 0.92 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.92 }}

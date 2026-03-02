@@ -22,7 +22,8 @@ pub async fn snap_to_corner(
     app: AppHandle,
     widget_x: f64,
     widget_y: f64,
-    widget_size: f64
+    widget_w: f64,
+    widget_h: f64,
 ) -> Result<(f64, f64), String> {
     let window = app.get_webview_window("main").ok_or("no window")?;
     let monitor = window.current_monitor()
@@ -32,23 +33,25 @@ pub async fn snap_to_corner(
     let scale = monitor.scale_factor();
     let sw = size.width as f64 / scale;
     let sh = size.height as f64 / scale;
-    let pad = 16.0;
-    let taskbar_height = 52.0; // Windows taskbar height + small buffer
-    let cx = widget_x + widget_size / 2.0;
-    let cy = widget_y + widget_size / 2.0;
+    let pad     = 16.0;
+    let taskbar = 52.0;
+
+    // Use window centre to decide which corner is nearest
+    let cx = widget_x + widget_w / 2.0;
+    let cy = widget_y + widget_h / 2.0;
 
     let corners = [
-        (pad,                        pad),                                       // top-left
-        (sw - widget_size - pad,     pad),                                       // top-right
-        (pad,                        sh - widget_size - taskbar_height),         // bottom-left
-        (sw - widget_size - pad,     sh - widget_size - taskbar_height),         // bottom-right
+        (pad,                    pad),                          // top-left
+        (sw - widget_w - pad,    pad),                          // top-right
+        (pad,                    sh - widget_h - taskbar),      // bottom-left
+        (sw - widget_w - pad,    sh - widget_h - taskbar),      // bottom-right
     ];
 
     let nearest = corners.iter().min_by(|a, b| {
-        let da = ((a.0 + widget_size/2.0 - cx).powi(2)
-                + (a.1 + widget_size/2.0 - cy).powi(2)).sqrt();
-        let db = ((b.0 + widget_size/2.0 - cx).powi(2)
-                + (b.1 + widget_size/2.0 - cy).powi(2)).sqrt();
+        let da = ((a.0 + widget_w / 2.0 - cx).powi(2)
+                + (a.1 + widget_h / 2.0 - cy).powi(2)).sqrt();
+        let db = ((b.0 + widget_w / 2.0 - cx).powi(2)
+                + (b.1 + widget_h / 2.0 - cy).powi(2)).sqrt();
         da.partial_cmp(&db).unwrap()
     }).unwrap();
 
