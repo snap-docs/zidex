@@ -14,6 +14,8 @@ fn main() {
             commands::window::set_window_position,
             commands::window::get_screen_size,
             commands::window::snap_to_corner,
+            commands::window::get_window_center,
+            commands::window::quit_app,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

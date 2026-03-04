@@ -5,10 +5,12 @@ import { useWindowStore, Corner } from "../stores/windowStore";
 
 const PAD = 16;
 const TASKBAR = 52;
-const PW = 52; const PH = 52;   // pill dimensions
-const EW = 320; const EH = 280;  // expanded panel dimensions
+const PW = 52; const PH = 52;
+const EW = 320; const EH = 280;
 
-// Absolute corner positions for collapsed pill (52x52)
+// Distance threshold (px) for close zone overlap
+const CLOSE_ZONE_RADIUS = 80;
+
 const pillCorners = (sw: number, sh: number): Record<Corner, [number, number]> => ({
     "top-left": [PAD, PAD],
     "top-right": [sw - PW - PAD, PAD],
@@ -16,7 +18,6 @@ const pillCorners = (sw: number, sh: number): Record<Corner, [number, number]> =
     "bottom-right": [sw - PW - PAD, sh - PH - TASKBAR],
 });
 
-// Absolute corner positions for expanded panel (320x280)
 const expandedCorners = (sw: number, sh: number): Record<Corner, [number, number]> => ({
     "top-left": [PAD, PAD],
     "top-right": [sw - EW - PAD, PAD],
@@ -24,14 +25,16 @@ const expandedCorners = (sw: number, sh: number): Record<Corner, [number, number
     "bottom-right": [sw - EW - PAD, sh - EH - TASKBAR],
 });
 
-// Suppress window-moved snap during programmatic resize/move
 let isDragSnapBlocked = false;
+let _pollInterval: ReturnType<typeof setInterval> | null = null;
 
 export const useWindow = () => {
-    const { isExpanded, setExpanded, setDragging, corner, setCorner } = useWindowStore();
+    const {
+        isExpanded, setExpanded, setDragging, setOverCloseZone,
+        setShouldClose, corner, setCorner
+    } = useWindowStore();
     const appWindow = getCurrentWindow();
 
-    // Smooth 10-step ease-out-cubic animation
     const snapWithAnimation = async (targetX: number, targetY: number) => {
         const pos = await appWindow.outerPosition();
         const scale = await appWindow.scaleFactor();
@@ -54,7 +57,6 @@ export const useWindow = () => {
         const ww = sz.width / scale;
         const wh = sz.height / scale;
 
-        // Pass actual dimensions so Rust calculates the correct corner
         const [targetX, targetY] = await invoke<[number, number]>("snap_to_corner", {
             widgetX: pos.x / scale,
             widgetY: pos.y / scale,
@@ -62,7 +64,6 @@ export const useWindow = () => {
             widgetH: wh,
         });
 
-        // Persist which corner we landed in
         const [sw, sh] = await invoke<[number, number]>("get_screen_size");
         const isExpNow = useWindowStore.getState().isExpanded;
         const positions = isExpNow ? expandedCorners(sw, sh) : pillCorners(sw, sh);
@@ -79,7 +80,6 @@ export const useWindow = () => {
         const [newX, newY] = expandedCorners(sw, sh)[c];
 
         isDragSnapBlocked = true;
-        // Move to correct position FIRST, then resize — prevents off-screen flash
         await invoke("set_window_position", { x: newX, y: newY });
         await appWindow.setSize(new LogicalSize(EW, EH));
         setExpanded(true);
@@ -88,26 +88,49 @@ export const useWindow = () => {
 
     const collapse = async () => {
         setExpanded(false);
-        await new Promise(r => setTimeout(r, 120)); // let exit animation play
+        await new Promise(r => setTimeout(r, 120));
 
         const [sw, sh] = await invoke<[number, number]>("get_screen_size");
         const c = useWindowStore.getState().corner;
         const [x, y] = pillCorners(sw, sh)[c];
 
         isDragSnapBlocked = true;
-        // Shrink FIRST so pill lands at correct position, not expanded-panel position
         await appWindow.setSize(new LogicalSize(PW, PH));
         await invoke("set_window_position", { x, y });
         setTimeout(() => { isDragSnapBlocked = false; }, 600);
     };
 
+    /**
+     * startDrag — called by GlassPill once drag threshold is crossed.
+     * Hands off to OS AND starts polling every 50ms.
+     * Drag END is detected by the window-moved debounce (150ms silence = released).
+     */
     const startDrag = async () => {
         setDragging(true);
+        setShouldClose(false);
+        setOverCloseZone(false);
+
+        // Get close zone center once
+        const [sw, sh] = await invoke<[number, number]>("get_screen_size");
+        const zoneX = sw / 2;
+        const zoneY = sh - 70 - 28; // 28 = half of 56px zone height
+
+        // Start position polling
+        if (_pollInterval) clearInterval(_pollInterval);
+        _pollInterval = setInterval(async () => {
+            try {
+                const [cx, cy] = await invoke<[number, number]>("get_window_center");
+                const dist = Math.hypot(cx - zoneX, cy - zoneY);
+                useWindowStore.getState().setOverCloseZone(dist < CLOSE_ZONE_RADIUS);
+            } catch { /* window moving */ }
+        }, 50);
+
+        // Hand off to OS — after this, JS mouseup will NOT fire
         await appWindow.startDragging();
     };
 
-    // Listen for window-moved (emitted by main.rs on every OS Moved event).
-    // Debounces 150ms — snaps after drag stops. Works for both pill and popup.
+    // window-moved fires for every OS-level drag move.
+    // 150ms silence = user released. This is where we decide: close or snap.
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout>;
         let unlistenFn: (() => void) | null = null;
@@ -116,8 +139,23 @@ export const useWindow = () => {
             if (isDragSnapBlocked) return;
             clearTimeout(timer);
             timer = setTimeout(async () => {
+                // ── Drag has ended (150ms silence) ──
+                const state = useWindowStore.getState();
+                if (!state.isDragging) return; // wasn't a user drag
+
+                // Stop the close-zone poll
+                if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
+
+                const isOver = state.isOverCloseZone;
+                setOverCloseZone(false);
                 setDragging(false);
-                await snapToNearestCorner();
+
+                if (isOver) {
+                    // Signal GlassPill to play exit animation then quit
+                    setShouldClose(true);
+                } else {
+                    await snapToNearestCorner();
+                }
             }, 150);
         }).then(fn => { unlistenFn = fn; });
 

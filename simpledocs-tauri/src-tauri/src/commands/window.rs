@@ -59,3 +59,21 @@ pub async fn snap_to_corner(
         .map_err(|e| e.to_string())?;
     Ok(*nearest)
 }
+
+/// Returns the current logical center of the widget window (x + half-width, y + half-height).
+#[command]
+pub async fn get_window_center(app: AppHandle) -> Result<(f64, f64), String> {
+    let window = app.get_webview_window("main").ok_or("no window")?;
+    let pos   = window.outer_position().map_err(|e| e.to_string())?;
+    let size  = window.outer_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let cx = pos.x as f64 / scale + size.width  as f64 / scale / 2.0;
+    let cy = pos.y as f64 / scale + size.height as f64 / scale / 2.0;
+    Ok((cx, cy))
+}
+
+/// Completely quit the application.
+#[command]
+pub async fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
